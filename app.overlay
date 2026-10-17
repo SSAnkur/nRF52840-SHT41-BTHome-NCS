@@ -1,0 +1,87 @@
+/* Pro Micro nRF52840 (nice!nano v2 compatible) + Adafruit SHT41 on a gated supply */
+#include <zephyr/dt-bindings/adc/adc.h>
+#include <zephyr/dt-bindings/adc/nrf-saadc.h>
+#include <zephyr/dt-bindings/gpio/nordic-nrf-gpio.h>
+
+/ {
+	/* P0.17 powers the SHT41: switched on only while the sensor is in use */
+	sens_pwr: sensor-power {
+		compatible = "power-domain-gpio";
+		enable-gpios = <&gpio0 17 (GPIO_ACTIVE_HIGH | NRF_GPIO_DRIVE_H0H1)>;
+		startup-delay-us = <3000>;		/* SHT41 power-up + breakout caps */
+		#power-domain-cells = <0>;
+		zephyr,pm-device-runtime-auto;
+	};
+
+	zephyr,user {
+		io-channels = <&adc 0>;
+	};
+};
+
+/* DC/DC on REG0 (VDDH -> VDD) and REG1 (VDD -> core) */
+&reg0 {
+	status = "okay";
+};
+
+&reg1 {
+	regulator-initial-mode = <NRF5X_REG_MODE_DCDC>;
+};
+
+/* I2C: SDA P0.20, SCL P0.22. "sleep" state = pins disconnected (no back-feeding) */
+&pinctrl {
+	sht_i2c_default: sht_i2c_default {
+		group1 {
+			psels = <NRF_PSEL(TWIM_SDA, 0, 20)>, <NRF_PSEL(TWIM_SCL, 0, 22)>;
+			bias-pull-up;
+		};
+	};
+
+	sht_i2c_sleep: sht_i2c_sleep {
+		group1 {
+			psels = <NRF_PSEL(TWIM_SDA, 0, 20)>, <NRF_PSEL(TWIM_SCL, 0, 22)>;
+			low-power-enable;
+		};
+	};
+};
+
+&i2c0 {
+	compatible = "nordic,nrf-twim";
+	status = "okay";
+	clock-frequency = <I2C_BITRATE_FAST>;
+	pinctrl-0 = <&sht_i2c_default>;
+	pinctrl-1 = <&sht_i2c_sleep>;
+	pinctrl-names = "default", "sleep";
+	zephyr,pm-device-runtime-auto;		/* bus enabled only during transfers */
+
+	sht41: sht4x@44 {
+		compatible = "sensirion,sht4x";
+		reg = <0x44>;
+		repeatability = <2>;			/* high precision, no heater */
+		power-domains = <&sens_pwr>;
+		zephyr,pm-device-runtime-auto;
+	};
+};
+
+/* Battery: VDDH/5, internal 0.6 V ref, gain 1/2 -> 0..1.2 V range */
+&adc {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	status = "okay";
+
+	channel@0 {
+		reg = <0>;
+		zephyr,gain = "ADC_GAIN_1_2";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		zephyr,acquisition-time = <ADC_ACQ_TIME(ADC_ACQ_TIME_MICROSECONDS, 10)>;
+		zephyr,input-positive = <NRF_SAADC_VDDHDIV5>;
+		zephyr,resolution = <14>;		/* LSB = 6000 mV / 16384 = 0.37 mV at VDDH */
+		zephyr,oversampling = <3>;		/* 2^3 = 8x */
+	};
+};
+
+/* Unused board peripherals */
+&i2c1 { status = "disabled"; };
+&spi2 { status = "disabled"; };
+&pwm0 { status = "disabled"; };
+&uart0 { status = "disabled"; };
+&usbd { status = "disabled"; };
