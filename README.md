@@ -1,8 +1,8 @@
 # nRF52840 SHT41 BTHome Beacon
 
 An ultra-low-power Bluetooth LE temperature and humidity beacon for the
-Pro Micro nRF52840 (nice!nano v2 compatible) with a Sensirion SHT41 sensor,
-built on Zephyr / the nRF Connect SDK.
+Pro Micro nRF52840 (Zephyr board `promicro_nrf52840`, UF2 bootloader variant)
+with a Sensirion SHT41 sensor, built on the nRF Connect SDK v3.4.1.
 
 The device broadcasts [BTHome v2](https://bthome.io/) advertisements, so it
 is discovered automatically by Home Assistant's BTHome integration (and any
@@ -16,13 +16,15 @@ Every **60 s** the firmware:
 1. Switches on the SHT41's supply from a GPIO (P0.17) and waits 3 ms for it to start.
 2. Takes one high-repeatability temperature / humidity measurement over I2C.
 3. Puts the I2C pins into a disconnected "sleep" state and cuts sensor power.
-4. Measures the supply voltage (VDDH) with the SAADC, right after the sensor load.
+4. If the sensor read succeeded, measures the supply voltage (VDDH) with the
+   SAADC, right after the sensor load.
 5. Updates the advertising payload.
 
 Between measurements the CPU sits in System ON idle while the radio sends a
 non-connectable advertisement every **10 s** (the payload therefore carries
 the same values for six consecutive adverts). If a sensor read fails, the
-last good values keep being advertised.
+battery is not measured and the advertisement is not updated, so the last
+good values (including voltage) keep being advertised.
 
 Power-saving measures, mostly configured in `app.overlay` and `prj.conf`:
 
@@ -63,30 +65,72 @@ power LED, remove it or increase `startup-delay-us` in `app.overlay`.
     └── main.c      # Measurement loop and BTHome payload
 ```
 
-## Building
+## Installing the SDK
 
-Requires the nRF Connect SDK (or upstream Zephyr) with `west`.
+The project is built with the nRF Connect SDK (NCS) **v3.4.1**, installed via
+Nordic's `nrfutil` command-line tool and its `sdk-manager` plugin.
+
+### 1. Get nrfutil
+
+Download the `nrfutil` executable for your OS from Nordic's nRF Util page:
+<https://www.nordicsemi.com/Products/Development-tools/nRF-Util>
+
+On Linux / macOS, make it executable and put it on your `PATH`, e.g.:
 
 ```sh
-west build -b nice_nano/nrf52840 -p
+chmod +x nrfutil
+mv nrfutil ~/.local/bin/        # or any directory on your PATH
+nrfutil --version
 ```
 
-On older SDKs that use the pre-hardware-model-v2 board names, use
-`-b nice_nano_v2` instead.
+On Windows, place `nrfutil.exe` in a folder that is on your `PATH`.
+
+### 2. Install the sdk-manager command
+
+```sh
+nrfutil install sdk-manager
+```
+
+### 3. Install NCS v3.4.1 (SDK + matching toolchain)
+
+```sh
+nrfutil sdk-manager install v3.4.1
+```
+
+By default this places the SDK in `~/ncs/v3.4.1` and the toolchain alongside it.
+You can list what is available or installed with `nrfutil sdk-manager search`
+and `nrfutil sdk-manager list`.
+
+## Building
+
+Open a shell with the NCS toolchain, load the Zephyr environment, and build
+from the project directory:
+
+```sh
+nrfutil sdk-manager toolchain launch --ncs-version v3.4.1 --shell
+source ~/ncs/v3.4.1/zephyr/zephyr-env.sh
+west build -b promicro_nrf52840/nrf52840/uf2
+```
+
+The `/uf2` board variant links the application above the pre-installed UF2
+bootloader and produces a `zephyr.uf2` image. Add `-p` to force a pristine
+(clean) build, e.g. after changing `app.overlay` or `prj.conf`.
 
 ## Flashing
 
-The nice!nano ships with a UF2 bootloader:
+The Pro Micro nRF52840 ships with a UF2 bootloader:
 
 1. Double-tap the reset button (or briefly short RST to GND twice). A USB
-   drive named `NICENANO` appears.
-2. Copy `build/zephyr/zephyr.uf2` onto the drive. The board reboots into the
-   new firmware.
+   mass-storage drive appears (often named `NICENANO`; the name depends on
+   the bootloader your board came with).
+2. Copy the generated `zephyr.uf2` onto the drive. With NCS's default
+   sysbuild it is at `build/<project-folder>/zephyr/zephyr.uf2` (or
+   `build/zephyr/zephyr.uf2` if you build with `--no-sysbuild`). The board
+   reboots into the new firmware.
 
 Because USB and serial are disabled in the application, the board will **not**
 enumerate over USB while running. Use the double-tap reset each time you
-want to reflash. You can also flash over SWD with a J-Link or similar probe
-using `west flash`.
+want to reflash.
 
 ## Advertising payload
 
@@ -131,10 +175,13 @@ power-up, and new readings every 60 s.
 - **Nothing shows up:** check that the board is powered from the battery
   input and wait at least one advertising interval (10 s). The first
   advertisement is sent even if the initial sensor read fails, with zeros
-  for temperature and humidity.
-- **Temperature/humidity stuck at 0:** the sensor isn't responding. Check the
-  wiring, the I2C address and that P0.17 actually powers the breakout.
-- **Voltage reads 0:** the ADC read failed; check the `&adc` node and that
-  `CONFIG_ADC=y`.
+  for temperature, humidity and voltage.
+- **All values stuck at 0:** the sensor has never responded (the battery is
+  only measured after a successful sensor read). Check the wiring, the I2C
+  address and that P0.17 actually powers the breakout.
+- **Values frozen at an old reading:** sensor reads are failing after an
+  earlier success; same checks as above.
+- **Voltage reads 0 but temperature/humidity update:** the ADC read failed;
+  check the `&adc` node and that `CONFIG_ADC=y`.
 - **Can't flash:** the application disables USB, so you must enter the
   bootloader with a double reset first.
